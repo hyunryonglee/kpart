@@ -28,6 +28,7 @@
 * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 * SOFTWARE.
 **/
+#include <sys/time.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <inttypes.h>
