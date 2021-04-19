@@ -1,6 +1,6 @@
 #!/bin/bash
-APP_DIR=../lltools/build/traverse_list_lbm
-INPUT=12288
+APP_DIR=/home/hrlee/cpu2017/benchspec/CPU/505.mcf_r/build/build_base_hrlee-m64.0000/mcf_r 
+INPUT=/home/hrlee/cpu2017/benchspec/CPU/505.mcf_r/data/test/input/inp.in
 
 for pid in 0 1 2 3 4 5 6 7
 do
@@ -35,7 +35,7 @@ echo "$perfCounters $phaseLen $logFile $warmupPeriod $profilingPeriod -- $proces
 
 # Pin KPart thread to core 15 (hyperthreading enabled)
 STARTTIME=$(($(date +%s%N)/1000000))
-numactl -C 15 ./../src/kpart_cmt $perfCounters $phaseLen $logFile $warmupPeriod $profilingPeriod \
+numactl -C 15 ./../src/kpart $perfCounters $phaseLen $logFile $warmupPeriod $profilingPeriod \
     -- $processStr1 \
     -- $processStr2 \
     -- $processStr3 \
