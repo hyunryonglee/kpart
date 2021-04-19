@@ -914,6 +914,18 @@ void sigsage_handler(int n, siginfo_t *info, void *vsc) {
           }
 
           if (procIdxProfiled_global == (NUM_CORES - 1)) {
+            // Done profiling
+            if (enableLogging)
+              printf(
+                  "[Done sampling MRCs]");
+            stopTime("END OF PROFILING.");
+
+          // We only want to use DynaWay portion, so do not apply
+          // partitioning based on profiled curves
+
+          /*
+
+          if (procIdxProfiled_global == (NUM_CORES - 1)) {
             //Done sampling, apply partitioning
             if (enableLogging)
               printf(
@@ -942,6 +954,7 @@ void sigsage_handler(int n, siginfo_t *info, void *vsc) {
             //doMorePartitioning = false;
             //estimateMRCenabled = false;
           }
+          */
 
         } //end if(loggingMRCFlags(pinfo.pidx,0) < 1){  //If this proc hasn't
           //logged yet, log MRC
