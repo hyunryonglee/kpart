@@ -919,6 +919,7 @@ void sigsage_handler(int n, siginfo_t *info, void *vsc) {
               printf(
                   "[Done sampling MRCs]");
             stopTime("END OF PROFILING.");
+          }
 
           // We only want to use DynaWay portion, so do not apply
           // partitioning based on profiled curves
