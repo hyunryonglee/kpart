@@ -109,6 +109,7 @@ const int SIGSAGE = SIGRTMIN + 1;
 struct ProcessInfo {
   int pid;
   int pidx; // Process indices in order specified on cmd line
+  int tid;
   std::string input;
   std::vector<int> cores;
   perf_event_desc_t *fds;
@@ -1262,31 +1263,32 @@ std::vector<int> parse_core_list(std::string corestr) {
 
 void parse_cmdline(int argc, char **argv) {
   if (argc < 4) {
-    errx(-1, "[KPART] Usage: %s <comma-sep-events> <phase_len> "
-             "<logfile/- for stdout> <warmup_period_B> <profile_period_B>"
-             "-- <max_phases_1> <input_redirect_1/'-' for stdin> "
-             " <comma-sep-core-list> prog1 -- ...",
+    errx(-1, "[KPART] Usage: %s <comma-sep-events> <tid> <phase_len> "
+             "<logfile/- for stdout> <warmup_period_B> <profile_period_B>",
          argv[0]);
   }
 
   events = argv[1];
-  phaseLen = atoll(argv[2]);
+  tid = stoi(argv[2]);
+  phaseLen = atoll(argv[3]);
 
-  logFile = argv[3];
+  logFile = argv[4];
   if (logFile == "-")
     prettyPrint = true;
 
   // Online profiling variables:
-  int warmUpInstrBl = atoll(argv[4]);
+  int warmUpInstrBl = atoll(argv[5]);
   warmUpInterval = (warmUpInstrBl * 1e9) / phaseLen;
 
-  int profilePeriodInstrBl = atoll(argv[5]);
+  int profilePeriodInstrBl = atoll(argv[6]);
   profileInterval = (profilePeriodInstrBl * 1e9) / phaseLen;
 
   invokeMonitorLen =
       warmUpInterval; //Start by invoking monitoring after a warmup period
 
-  int arg = 5;
+  // No need to spawn processes, master process will spawn threads that will
+  // stress the cache allocation
+  int arg = 6;
   numProcesses = 0;
   while (++arg < argc) {
     if (std::string(argv[arg]) == "--") {
