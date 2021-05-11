@@ -733,42 +733,8 @@ void sigsage_handler(int n, siginfo_t *info, void *vsc) {
                   "[Done sampling MRCs]");
             stopTime("END OF PROFILING.");
           }
-
           // We only want to use DynaWay portion, so do not apply
           // partitioning based on profiled curves
-
-          /*
-
-          if (procIdxProfiled_global == (NUM_CORES - 1)) {
-            //Done sampling, apply partitioning
-            if (enableLogging)
-              printf(
-                  "[Done sampling MRCs, now reapply partitioning; PHASE %d] \n",
-                  pinfo.numPhases);
-            stopTime("END OF PROFILING.");
-
-            // Do cache partitioning only
-            numSamples++;
-            if (numSamples == numSamplesBeforePartitioning &&
-                doMorePartitioning) {
-              if (enableLogging)
-                printf("[INFO] Clustering ... ");
-
-              startTime();
-              cluster_mrcs(sampledMRCs, sampledIPCs);
-              stopTime("END OF CLUSTERING.");
-
-              // Old, per-app UCP partitioning:
-              //doUcpForIPCs(sampledIPCs);
-              //doUcpForMRCs(sampledMRCs);
-
-              numSamples = 0;
-            }
-            //[INFO]  Disable further monitoring and repartitioning
-            //doMorePartitioning = false;
-            //estimateMRCenabled = false;
-          }
-          */
 
         } //end if(loggingMRCFlags(pinfo.pidx,0) < 1){  //If this proc hasn't
           //logged yet, log MRC
@@ -1074,94 +1040,85 @@ std::vector<int> parse_core_list(std::string corestr) {
 }
 
 void parse_cmdline(int argc, char **argv) {
-  if (argc < 4) {
-    errx(-1, "[KPART] Usage: %s <comma-sep-events> <tid> <phase_len> "
-             "<logfile/- for stdout> <warmup_period_B> <profile_period_B>",
-         argv[0]);
-  }
-
-  events = argv[1];
-  profileTid = std::stoi(argv[2]);
-  phaseLen = atoll(argv[3]);
-
-  logFile = argv[4];
-  if (logFile == "-")
-    prettyPrint = true;
-
-  // Online profiling variables:
-  int warmUpInstrBl = atoll(argv[5]);
-  warmUpInterval = (warmUpInstrBl * 1e9) / phaseLen;
-
-  int profilePeriodInstrBl = atoll(argv[6]);
-  profileInterval = (profilePeriodInstrBl * 1e9) / phaseLen;
-
-  invokeMonitorLen =
-      warmUpInterval; //Start by invoking monitoring after a warmup period
-
-  // No need to spawn processes, master process will spawn threads that will
-  // stress the cache allocation
-  int arg = 6;
-  numProcesses = 0;
-  while (++arg < argc) {
-    if (std::string(argv[arg]) == "--") {
-      processInfo.push_back(ProcessInfo());
-      ProcessInfo &pinfo = processInfo.back();
-      int pidx = numProcesses++;
-      pinfo.pidx = pidx;
-#ifdef USE_CMT
-      pinfo.rmid = pidx;
-#endif
-
-// Each process has, as its first three arguments
-// (i.e., immediately following '--'), the following:
-// max phases, input file (or '-' for stdin), a comma
-//  separated list of cores it should be run on
-#ifdef MASTER_PROC
-      if (pidx == 0) {
-        pinfo.maxPhases = atoi(argv[++arg]);
-      } else {
-        ++arg; // skip over arg
-        pinfo.maxPhases = std::numeric_limits<int>::max();
-      }
-#else
-      pinfo.maxPhases = atoi(argv[++arg]);
-#endif
-      pinfo.input = argv[++arg];
-      pinfo.cores = parse_core_list(argv[++arg]);
-
-      if (logFile == "-") {
-        pinfo.logFd = stdout;
-      } else {
-        std::stringstream ss;
-        ss << logFile << "." << pidx;
-        FILE *fd = fopen(ss.str().c_str(), "w");
-        if (fd == nullptr)
-          errx(-1, "Error opening logFd for pidx %d", pidx);
-        pinfo.logFd = fd;
-
-        // Logging MRC estimates
-        std::stringstream ssmrc;
-        ssmrc << "onlineMRCSamples"
-              << "." << pidx;
-        FILE *mrclog = fopen(ssmrc.str().c_str(), "w");
-        if (mrclog == nullptr)
-          errx(-1, "Error opening log file for mrc estimates in pidx %d", pidx);
-        pinfo.mrcfd = mrclog;
-
-        // Logging IPC estimates
-        std::stringstream ssipc;
-        ssipc << "onlineIPCSamples"
-              << "." << pidx;
-        FILE *ipclog = fopen(ssipc.str().c_str(), "w");
-        if (ipclog == nullptr)
-          errx(-1, "Error opening log file for ipc estimates in pidx %d", pidx);
-        pinfo.ipcfd = ipclog;
-
-      }
-    } else {
-      processInfo.back().args.push_back(argv[arg]);
+    if (argc < 4) {
+      errx(-1, "[KPART] Usage: %s <comma-sep-events> <tid> <phase_len>"
+               "<logfile/- for stdout> <warmup_period_B> <profile_period_B>"
+                "<max_phases>",
+           argv[0]);
     }
-  }
+
+    events = argv[1];
+    profileTid = std::stoi(argv[2]);
+    phaseLen = atoll(argv[3]);
+
+    logFile = argv[4];
+    if (logFile == "-")
+      prettyPrint = true;
+
+    // Online profiling variables:
+    int warmUpInstrBl = atoll(argv[5]);
+    warmUpInterval = (warmUpInstrBl * 1e9) / phaseLen;
+
+    int profilePeriodInstrBl = atoll(argv[6]);
+    profileInterval = (profilePeriodInstrBl * 1e9) / phaseLen;
+
+    invokeMonitorLen =
+        warmUpInterval; //Start by invoking monitoring after a warmup period
+
+    // Create <num_thread> processes, each with its own ProcessInfo struct
+    int num_threads = 8; // TODO: hoist this up...
+    for (int pidx = 0; pidx < num_threads; pidx++) {
+        processInfo.push_back(ProcessInfo());
+        ProcessInfo &pinfo = processInfo.back();
+        pinfo.pidx = pidx;
+#ifdef USE_CMT
+        pinfo.rmid = pidx;
+#endif
+
+// Keep a ProcessInfo struct for the master thread as well as all child threads
+#ifdef MASTER_PROC
+        if (pidx == 0) {
+          pinfo.maxPhases = atoi(argv[7]);
+        } else {
+          pinfo.maxPhases = std::numeric_limits<int>::max();
+        }
+#else
+        pinfo.maxPhases = atoi(argv[7]);
+#endif
+        std::vector<int> cores;
+        cores.push_back(pidx);
+        pinfo.cores = cores;
+
+        if (logFile == "-") {
+            pinfo.logFd = stdout;
+        } else {
+            std::stringstream ss;
+            ss << logFile << "." << pidx;
+            FILE *fd = fopen(ss.str().c_str(), "w");
+            if (fd == nullptr)
+              errx(-1, "Error opening logFd for pidx %d", pidx);
+            pinfo.logFd = fd;
+
+            // Logging MRC estimates
+            std::stringstream ssmrc;
+            ssmrc << "onlineMRCSamples"
+                  << "." << pidx;
+            FILE *mrclog = fopen(ssmrc.str().c_str(), "w");
+            if (mrclog == nullptr)
+              errx(-1, "Error opening log file for mrc estimates in pidx %d", pidx);
+            pinfo.mrcfd = mrclog;
+
+            // Logging IPC estimates
+            std::stringstream ssipc;
+            ssipc << "onlineIPCSamples"
+                  << "." << pidx;
+            FILE *ipclog = fopen(ssipc.str().c_str(), "w");
+            if (ipclog == nullptr)
+              errx(-1, "Error opening log file for ipc estimates in pidx %d", pidx);
+            pinfo.ipcfd = ipclog;
+
+        }
+    }
 }
 
 int main(int argc, char **argv) {
