@@ -97,6 +97,7 @@ arma::vec loggingMRCFlags = zeros<arma::vec>(NUM_CORES);
 int invokeMonitorLen = -1; //Skip this much instructions before invoking DynaWay
 int warmUpInterval = -1;
 int profileInterval = -1;
+int profileTid = -1;
 
 // NOTE: The 'master' mode, enabled via MASTER_PROC, treats the first process
 // (pidx 0) as the master process and everybody else as the slave. Sage runs the
@@ -526,195 +527,6 @@ void dump_ipc_estimates(ProcessInfo &pinfo) {
     }
     fprintf(pinfo.ipcfd, "\n");
   }
-}
-// ---------------------------------------------------------- //
-
-void cluster_mrcs(arma::mat mpkiVsWays, arma::mat ipcVsWays) {
-  if (enableLogging)
-    printf("\n [INFO]  Inside cluster_mrcs()\n");
-  cache_utils::smoothenMRCs(mpkiVsWays);
-  cache_utils::smoothenIPCs(ipcVsWays);
-  int numApps = mpkiVsWays.n_cols;
-
-  // Convert sampled MRCs to format compatible with hclustering library:
-  uint32_t numTimeIntervals = 1;
-  std::vector<std::vector<RawMissCurve> > timeCurves;
-
-  for (uint32_t i = 0; i < numApps; i++) {
-    std::vector<uint32_t> data(CACHE_WAYS);
-    std::copy(&mpkiVsWays.col(i)[0], &mpkiVsWays.col(i)[CACHE_WAYS],
-              data.begin());
-    std::vector<RawMissCurve> appCurves;
-    for (uint32_t j = 0; j < numTimeIntervals; j++) {
-      appCurves.push_back(RawMissCurve(std::move(data), nullptr));
-    }
-    timeCurves.push_back(appCurves);
-  }
-
-  if (enableLogging) {
-    printf("[INFO]  printing appCurves:\n");
-    for (uint32_t i = 0; i < timeCurves.size(); i++) {
-      std::cout << "App " << i << " ";
-      for (uint32_t j = 0; j < timeCurves[i].size(); j++) {
-        std::cout << timeCurves[i][j];
-      }
-      std::cout << std::endl;
-    }
-    std::cout << std::endl;
-  }
-
-  // ************* AUTO-K CALC ************* //
-  if (enableLogging)
-    printf("\n[INFO] Auto-K Clustering ... \n");
-  hcluster::HCluster clustauto;
-  std::vector<hcluster::HCluster::results_pack> rpauto =
-      clustauto.clusterAuto(timeCurves);
-
-  // For each "K", get the expected WS
-  // Then, rank K's by the corresponding WS and pick the number of clusters
-  // that yields the maximum weighted spedup for this cluster
-  double bestWs = -1.0;
-  uint32_t bestK = 0;
-  int bestKidx = -1.0;
-
-  for (uint32_t k = 0; k < (NUM_CORES - 2); k++) {
-    int num_clusters = NUM_CORES - (k + 1);
-
-    if (enableLogging)
-      printf("\n \t[========================  K = %d   "
-             "========================]\n",
-             num_clusters);
-
-    hcluster::HCluster::results_pack rp = rpauto[k];
-    auto item_to_clusts = rp.item_to_clusts;
-    auto cluster_curves = rp.cluster_curves;
-    auto cluster_bucks = rp.cluster_buckets;
-
-    // Get partitions for per-cluster curves using WS curves
-    std::vector<const MissCurve *> curveVec;
-    for (uint32_t c = 0; c < num_clusters; c++) {
-      //std::cout << "cluster ID = "<< c << " temp: "; //std::endl;
-      std::vector<uint32_t> data(CACHE_WAYS);
-      data = cluster_curves[c][0].yvals;
-      curveVec.push_back(new RawMissCurve(std::move(data), nullptr));
-    }
-    std::vector<uint32_t> minAllocs;
-    minAllocs.push_back(1);
-
-    uint32_t allocations[num_clusters];
-    std::vector<std::vector<double> > wsCurveVecDbl =
-        cache_utils::get_wscurves_for_combinedmrcs(cluster_bucks, ipcVsWays);
-    std::vector<const MissCurve *> wsCurveVec;
-    for (uint32_t i = 0; i < wsCurveVecDbl.size(); i++) {
-      std::vector<uint32_t> data(CACHE_WAYS);
-      std::copy(&wsCurveVecDbl[i][0], &wsCurveVecDbl[i][CACHE_WAYS],
-                data.begin());
-      wsCurveVec.push_back(new RawMissCurve(std::move(data), nullptr));
-    }
-
-    hillClimbingPartitionWsCurves(CACHE_WAYS, minAllocs, &allocations[0],
-                                  wsCurveVec, wsCurveVecDbl);
-
-    //Given this partitioning plan, what's the corresponding total WS?
-    double wsK = 0.0;
-    for (uint32_t w = 0; w < num_clusters; w++) {
-      int allocIdx = allocations[w] - 1;
-      wsK += wsCurveVecDbl[w][allocIdx];
-    }
-
-    if (wsK > bestWs) {
-      bestWs = wsK;
-      bestK = num_clusters;
-      bestKidx = k;
-    }
-    if (enableLogging)
-      printf("\t\t=> For num_clusters = %d, predicted WS = %.2f\n",
-             num_clusters, wsK);
-
-  } //end of processing all K results returned by clusterAuto()
-    // ************* End of AUTO-K calculations ************* //
-
-  // Select this predicted K
-  K = bestK;
-
-  if (enableLogging)
-    printf("\n[INFO] Cluster applications into K-Auto = %d groups ... \n", K);
-
-  hcluster::HCluster::results_pack rp = rpauto[bestKidx];
-
-  auto item_to_clusts = rp.item_to_clusts;
-  auto cluster_curves = rp.cluster_curves;
-  auto cluster_bucks = rp.cluster_buckets;
-
-  if (enableLogging)
-    printf("[INFO] Get partitions for per-cluster curves.. \n");
-
-  std::vector<uint32_t> minAllocs;
-  minAllocs.push_back(1);
-
-  // Partitioning based on WS curves ..
-  uint32_t allocations[K];
-  std::vector<std::vector<double> > wsCurveVecDbl =
-      cache_utils::get_wscurves_for_combinedmrcs(cluster_bucks, ipcVsWays);
-  std::vector<const MissCurve *> wsCurveVec;
-  for (uint32_t i = 0; i < wsCurveVecDbl.size(); i++) {
-    std::vector<uint32_t> data(CACHE_WAYS);
-    std::copy(&wsCurveVecDbl[i][0], &wsCurveVecDbl[i][CACHE_WAYS],
-              data.begin());
-    wsCurveVec.push_back(new RawMissCurve(std::move(data), nullptr));
-  }
-  hillClimbingPartitionWsCurves(CACHE_WAYS, minAllocs, &allocations[0],
-                                wsCurveVec, wsCurveVecDbl);
-  if (enableLogging) {
-    printf("[INFO] Hill climbing on WS curves: ");
-    cache_utils::print_allocations(allocations);
-  }
-
-  // Apply per-cluster partitioning; e.g.: for K=3: 9, 2, 1
-  if (enableLogging)
-    printf("[INFO] Apply per-cluster partitioning ... \n");
-
-  std::stack<int> buckets;
-  for (int i = (CACHE_WAYS - 1); i >= 0; --i)
-    buckets.push(i);
-  std::stack<int> cluster_partitions[K];
-  for (uint32_t c = 0; c < K; c++) {
-    for (uint32_t p = 0; p < allocations[c]; p++) {
-      cluster_partitions[c].push(buckets.top());
-      buckets.pop();
-    }
-  }
-
-  // Workaround bug with COS 10,11 in Intel's CAT
-  cache_utils::verify_intel_cos_issue(cluster_partitions, K);
-
-  std::stack<int> app_partitions[numApps];
-
-  printf("\n ------------- KPart+DynaWay Cache assignments to apps "
-         "--------------  "
-         "\n");
-  for (int a = 0; a < numApps; ++a) {
-    int cid = item_to_clusts[a];
-    app_partitions[a] = cluster_partitions[cid];
-    std::cout << "App: " << a << " Clust: " << cid << " Parts: ";
-    std::string waysString = "";
-    while (!app_partitions[a].empty()) {
-      std::cout << ' ' << app_partitions[a].top();
-      waysString = waysString + std::to_string(app_partitions[a].top());
-      waysString += ",";
-      app_partitions[a].pop();
-    }
-    std::cout << std::endl;
-  }
-
-  for (int a = 0; a < numApps; ++a) {
-    int cid = item_to_clusts[a];
-    app_partitions[a] = cluster_partitions[cid];
-  }
-
-  // Now apply this partitioning plan:
-  cache_utils::apply_partition_plan(app_partitions);
-
 }
 
 // ---------------------------------------------------------- //
@@ -1269,7 +1081,7 @@ void parse_cmdline(int argc, char **argv) {
   }
 
   events = argv[1];
-  tid = stoi(argv[2]);
+  profileTid = std::stoi(argv[2]);
   phaseLen = atoll(argv[3]);
 
   logFile = argv[4];
